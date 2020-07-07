@@ -1,5 +1,5 @@
 /*
- * Copyright 2012 - 2017 Anton Tananaev (anton@traccar.org)
+ * Copyright 2012 - 2020 Anton Tananaev (anton@traccar.org)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,24 +27,32 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.preference.EditTextPreference;
-import android.preference.Preference;
-import android.preference.PreferenceFragment;
-import android.preference.PreferenceManager;
-import android.preference.TwoStatePreference;
-import androidx.annotation.NonNull;
-import androidx.core.content.ContextCompat;
-import androidx.appcompat.app.AlertDialog;
+import android.text.InputType;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
+import android.view.View;
 import android.webkit.URLUtil;
+import android.widget.EditText;
 import android.widget.Toast;
 
-import java.util.Random;
+import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
+import androidx.core.content.ContextCompat;
+import androidx.preference.EditTextPreference;
+import androidx.preference.EditTextPreferenceDialogFragmentCompat;
+import androidx.preference.Preference;
+import androidx.preference.PreferenceFragmentCompat;
+import androidx.preference.PreferenceManager;
+import androidx.preference.TwoStatePreference;
 
-public class MainFragment extends PreferenceFragment implements OnSharedPreferenceChangeListener {
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Random;
+import java.util.Set;
+
+public class MainFragment extends PreferenceFragmentCompat implements OnSharedPreferenceChangeListener {
 
     private static final String TAG = MainFragment.class.getSimpleName();
 
@@ -57,6 +65,7 @@ public class MainFragment extends PreferenceFragment implements OnSharedPreferen
     public static final String KEY_ANGLE = "angle";
     public static final String KEY_ACCURACY = "accuracy";
     public static final String KEY_STATUS = "status";
+    public static final String KEY_BUFFER = "buffer";
 
     private static final int PERMISSIONS_REQUEST_LOCATION = 2;
 
@@ -66,15 +75,14 @@ public class MainFragment extends PreferenceFragment implements OnSharedPreferen
     private PendingIntent alarmIntent;
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        if (BuildConfig.HIDDEN_APP) {
+    public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
+        if (BuildConfig.HIDDEN_APP && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             removeLauncherIcon();
         }
 
         setHasOptionsMenu(true);
 
-        sharedPreferences = PreferenceManager.getDefaultSharedPreferences(getActivity());
+        sharedPreferences = PreferenceManager.getDefaultSharedPreferences(getContext());
         addPreferencesFromResource(R.xml.preferences);
         initPreferences();
 
@@ -129,6 +137,37 @@ public class MainFragment extends PreferenceFragment implements OnSharedPreferen
         if (sharedPreferences.getBoolean(KEY_STATUS, false)) {
             startTrackingService(true, false);
         }
+
+    }
+
+    public static class NumericEditTextPreferenceDialogFragment extends EditTextPreferenceDialogFragmentCompat {
+
+        public static NumericEditTextPreferenceDialogFragment newInstance(String key) {
+            final NumericEditTextPreferenceDialogFragment fragment = new NumericEditTextPreferenceDialogFragment();
+            final Bundle bundle = new Bundle();
+            bundle.putString(ARG_KEY, key);
+            fragment.setArguments(bundle);
+            return fragment;
+        }
+
+        @Override
+        protected void onBindDialogView(View view) {
+            EditText editText = view.findViewById(android.R.id.edit);
+            editText.setInputType(InputType.TYPE_CLASS_NUMBER);
+            super.onBindDialogView(view);
+        }
+
+    }
+
+    @Override
+    public void onDisplayPreferenceDialog(Preference preference) {
+        if (Arrays.asList(KEY_INTERVAL, KEY_DISTANCE, KEY_ANGLE).contains(preference.getKey())) {
+            final EditTextPreferenceDialogFragmentCompat f = NumericEditTextPreferenceDialogFragment.newInstance(preference.getKey());
+            f.setTargetFragment(this, 0);
+            f.show(getFragmentManager(), "androidx.preference.PreferenceFragment.DIALOG");
+        } else {
+            super.onDisplayPreferenceDialog(preference);
+        }
     }
 
     private void removeLauncherIcon() {
@@ -166,6 +205,7 @@ public class MainFragment extends PreferenceFragment implements OnSharedPreferen
         findPreference(KEY_DISTANCE).setEnabled(enabled);
         findPreference(KEY_ANGLE).setEnabled(enabled);
         findPreference(KEY_ACCURACY).setEnabled(enabled);
+        findPreference(KEY_BUFFER).setEnabled(enabled);
     }
 
     @Override
@@ -192,9 +232,6 @@ public class MainFragment extends PreferenceFragment implements OnSharedPreferen
         if (item.getItemId() == R.id.status) {
             startActivity(new Intent(getActivity(), StatusActivity.class));
             return true;
-        } else if (item.getItemId() == R.id.about) {
-            startActivity(new Intent(getActivity(), AboutActivity.class));
-            return true;
         }
         return super.onOptionsItemSelected(item);
     }
@@ -212,11 +249,18 @@ public class MainFragment extends PreferenceFragment implements OnSharedPreferen
 
     private void startTrackingService(boolean checkPermission, boolean permission) {
         if (checkPermission) {
-            if (ContextCompat.checkSelfPermission(getActivity(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                permission = true;
-            } else {
+            Set<String> requiredPermissions = new HashSet<>();
+            if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                requiredPermissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                    && ContextCompat.checkSelfPermission(getContext(), Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                requiredPermissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+            }
+            permission = requiredPermissions.isEmpty();
+            if (!permission) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, PERMISSIONS_REQUEST_LOCATION);
+                    requestPermissions(requiredPermissions.toArray(new String[requiredPermissions.size()]), PERMISSIONS_REQUEST_LOCATION);
                 }
                 return;
             }
@@ -224,12 +268,12 @@ public class MainFragment extends PreferenceFragment implements OnSharedPreferen
 
         if (permission) {
             setPreferencesEnabled(false);
-            ContextCompat.startForegroundService(getActivity(), new Intent(getActivity(), TrackingService.class));
+            ContextCompat.startForegroundService(getContext(), new Intent(getActivity(), TrackingService.class));
             alarmManager.setInexactRepeating(AlarmManager.ELAPSED_REALTIME_WAKEUP,
                     ALARM_MANAGER_INTERVAL, ALARM_MANAGER_INTERVAL, alarmIntent);
         } else {
             sharedPreferences.edit().putBoolean(KEY_STATUS, false).apply();
-            TwoStatePreference preference = (TwoStatePreference) findPreference(KEY_STATUS);
+            TwoStatePreference preference = findPreference(KEY_STATUS);
             preference.setChecked(false);
         }
     }
